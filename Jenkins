@@ -1,0 +1,96 @@
+pipeline {
+    agent any
+   
+    environment {
+        DOCKERHUB_CREDENTIALS = 'docker-cred' // Replace with your credentials ID
+        DOCKERHUB_REPO = 'arifullalab01/mission' // Replace with your Docker Hub repository
+        IMAGE_TAG = "${env.BUILD_NUMBER}" // Use the build number as the tag
+
+    }
+
+    tools{
+        jdk 'jdk17' 
+        maven 'maven3'
+    }
+
+    stages {
+        stage('GitCheckout') {
+            steps {
+                git branch: 'main', changelog: false, poll: false, url: 'https://github.com/ARIFULLALAB01/Mission.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                sh "mvn package -DskipTests=true"
+            }
+        }
+        stage('Test and Archive Artifacts') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', followSymlinks: false
+        
+            }
+        }
+        stage('Test scan file system') {
+            steps {
+                sh "trivy fs --format table -o trivy-fs-report.html ."
+
+            }
+        }
+         stage('sonar-QUBE') {
+            steps {
+                withSonarQubeEnv(credentialsId: 'Sonar-Mission-Cred', installationName: 'Sonar-Mission-Cred') { // You can override the credential to be used
+                sh 'mvn clean package -DskipTests=true sonar:sonar -Dsonar.host.url=https://sonarcloud.io -Dsonar.organization=missionmanual -Dsonar.projectKey=missionmanual_missionproject'}
+
+            }
+        }
+        stage('BuildingPackage') {
+            steps {
+                sh "mvn package -DskipTests=true"
+            }
+        }
+        stage('Build') {
+            steps {
+                script {
+                    echo "Building Docker image with tag: $IMAGE_TAG"
+                    sh 'docker build -t $DOCKERHUB_REPO:$IMAGE_TAG .'
+                }
+            }
+        }
+        stage('Login to Docker Hub') {
+            steps {
+                script {
+                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                        echo "Logged in to Docker Hub"
+                    }
+                }
+            }
+        }
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                        sh 'docker push $DOCKERHUB_REPO:$IMAGE_TAG'
+                    }
+                }
+            }
+        }
+        stage('Deployemnt into K8s') {
+            steps {
+                withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'kubernetes', contextName: 'kubernetes', credentialsId: 'k8-sec', namespace: 'webapps', serverUrl: 'https://10.182.0.30:6443']]) 
+                {   
+                   sh "kubectl apply -f ds.yml -n webapps"
+            
+                }
+            }
+        }
+         stage(' K8 Post Checking') {
+            steps {
+                withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'kubernetes', contextName: 'kubernetes', credentialsId: 'k8-sec', namespace: 'webapps', serverUrl: 'https://10.182.0.30:6443']]) 
+                {   
+                   sh "kubectl get pods -n webapps"
+                   sh "kubectl get svc -n webapps"
+                }
+            }
+        }
+    }
+}
